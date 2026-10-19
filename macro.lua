@@ -1,6 +1,100 @@
 local success, errorMessage = pcall(function()
-    -- Wait 10 seconds on game load so auto-execute works reliably
-task.wait(10)
+local LOAD_DELAY = 10
+
+do
+	local PlayersSvc = game:GetService("Players")
+	local CoreGuiSvc = game:GetService("CoreGui")
+
+	for _, name in ipairs({ "AutoShadowRaidLoader" }) do
+		local old = CoreGuiSvc:FindFirstChild(name)
+		if old then
+			old:Destroy()
+		end
+	end
+
+	local loaderGui = Instance.new("ScreenGui")
+	loaderGui.Name = "AutoShadowRaidLoader"
+	loaderGui.ResetOnSpawn = false
+	loaderGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	pcall(function()
+		loaderGui.Parent = CoreGuiSvc
+	end)
+	if not loaderGui.Parent then
+		repeat
+			task.wait()
+		until PlayersSvc.LocalPlayer
+		loaderGui.Parent = PlayersSvc.LocalPlayer:WaitForChild("PlayerGui")
+	end
+
+	local box = Instance.new("Frame")
+	box.Size = UDim2.fromOffset(280, 86)
+	box.AnchorPoint = Vector2.new(0.5, 0)
+	box.Position = UDim2.new(0.5, 0, 0, 24)
+	box.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+	box.BorderSizePixel = 0
+	box.Parent = loaderGui
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 12)
+	local boxStroke = Instance.new("UIStroke", box)
+	boxStroke.Color = Color3.fromRGB(48, 53, 66)
+	boxStroke.Thickness = 1
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -28, 0, 20)
+	title.Position = UDim2.fromOffset(14, 12)
+	title.BackgroundTransparency = 1
+	title.Text = "Auto Shadow Raid (Undetected)"
+	title.TextColor3 = Color3.fromRGB(236, 238, 242)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 14
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = box
+
+	local info = Instance.new("TextLabel")
+	info.Size = UDim2.new(1, -28, 0, 18)
+	info.Position = UDim2.fromOffset(14, 34)
+	info.BackgroundTransparency = 1
+	info.Text = ""
+	info.TextColor3 = Color3.fromRGB(137, 145, 161)
+	info.Font = Enum.Font.GothamMedium
+	info.TextSize = 13
+	info.TextXAlignment = Enum.TextXAlignment.Left
+	info.Parent = box
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -28, 0, 6)
+	track.Position = UDim2.fromOffset(14, 62)
+	track.BackgroundColor3 = Color3.fromRGB(38, 42, 53)
+	track.BorderSizePixel = 0
+	track.Parent = box
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 3)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 3)
+
+	local startTime = os.clock()
+	while true do
+		local elapsed = os.clock() - startTime
+		if elapsed >= LOAD_DELAY then
+			break
+		end
+		local remaining = math.ceil(LOAD_DELAY - elapsed)
+		info.Text = string.format("Loading...  script starts in %ds", remaining)
+		fill.Size = UDim2.new(math.clamp(elapsed / LOAD_DELAY, 0, 1), 0, 1, 0)
+		task.wait(0.05)
+	end
+
+	fill.Size = UDim2.new(1, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(52, 168, 110)
+	info.Text = "Loaded!"
+	info.TextColor3 = Color3.fromRGB(52, 168, 110)
+	task.delay(0.8, function()
+		loaderGui:Destroy()
+	end)
+end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -8,13 +102,13 @@ local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local vim = game:GetService("VirtualInputManager")
 local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local localPlayer = Players.LocalPlayer
-local CONFIG_FILE = "KeySpammer_Config.json"
+local CONFIG_FILE = "AutoShadowRaid_Config.json"
 
---------------------------------------------------------------------
--- Theme
---------------------------------------------------------------------
 local THEME = {
 	Background = Color3.fromRGB(18, 20, 26),
 	Panel = Color3.fromRGB(26, 29, 37),
@@ -30,9 +124,6 @@ local THEME = {
 
 local TWEEN_FAST = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
---------------------------------------------------------------------
--- UI helpers
---------------------------------------------------------------------
 local function tween(obj, props)
 	TweenService:Create(obj, TWEEN_FAST, props):Play()
 end
@@ -70,7 +161,6 @@ local function padding(top, right, bottom, left)
 	})
 end
 
--- Buttons keep a "base" colour so hover/press effects work with any state colour
 local baseColors = {}
 
 local function setBase(btn, color)
@@ -140,38 +230,61 @@ local function makeDraggable(handle, target)
 	end)
 end
 
---------------------------------------------------------------------
--- State
---------------------------------------------------------------------
-local keyRows = {
-	{ "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" },
-	{ "a", "s", "d", "f", "g", "h", "j", "k", "l" },
-	{ "z", "x", "c", "v", "b", "n", "m" },
-}
+local SPAM_KEY = Enum.KeyCode.Q
 
-local selected_keys = {}
-local keyButtons = {}
 local toggle = false
 local loopRunning = false
 local flashing = false
+local spamEnabled = false
+local clickEnabled = false
+local clickInterval = 0.1
+local clickLoopRunning = false
 
-local function countKeys()
-	local n = 0
-	for _ in pairs(selected_keys) do
-		n += 1
-	end
-	return n
+local isInClickRange = function()
+	return true
 end
 
---------------------------------------------------------------------
--- Clean up old GUI if re-executing
---------------------------------------------------------------------
-if CoreGui:FindFirstChild("MultiKeySpammerGui") then
-	CoreGui.MultiKeySpammerGui:Destroy()
+local walkEnabled = false
+local nearTarget = false
+
+local WALK = {
+	FolderName = "enemies",
+	MaxDistance = 1500,
+	StopDistance = 4,
+	KeyStopDistance = 6,
+	KeyResumeDistance = 9,
+	RecalculateDelay = 0.3,
+	WaypointReach = 3,
+	ClickRange = 8,
+	FixAnimation = true,
+	RunAnimationId = "rbxassetid://129902810960575",
+	ImmuneMarker = "OathBeamTo",
+}
+
+local function isImmune(enemy)
+	return WALK.ImmuneMarker ~= nil and enemy:FindFirstChild(WALK.ImmuneMarker, true) ~= nil
+end
+
+local INTERVAL_MIN = 0.01
+local INTERVAL_MAX = 2
+
+local function doClick()
+	local remote = ReplicatedStorage:FindFirstChild("performM1")
+	if not remote then
+		error("performM1 remote not found in ReplicatedStorage")
+	end
+	remote:FireServer()
+end
+
+for _, name in ipairs({ "AutoShadowRaidGui", "MultiKeySpammerGui" }) do
+	local old = CoreGui:FindFirstChild(name)
+	if old then
+		old:Destroy()
+	end
 end
 
 local screenGui = create("ScreenGui", {
-	Name = "MultiKeySpammerGui",
+	Name = "AutoShadowRaidGui",
 	ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 })
@@ -182,12 +295,9 @@ if not screenGui.Parent then
 	screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 end
 
---------------------------------------------------------------------
--- Main panel
---------------------------------------------------------------------
 local mainFrame = create("Frame", {
 	Name = "MainFrame",
-	Size = UDim2.fromOffset(230, 164),
+	Size = UDim2.fromOffset(280, 300),
 	Position = UDim2.new(0, 20, 0, 20),
 	BackgroundColor3 = THEME.Background,
 	BorderSizePixel = 0,
@@ -212,27 +322,14 @@ create("Frame", {
 
 create("TextLabel", {
 	Name = "Title",
-	Size = UDim2.new(1, -90, 1, 0),
+	Size = UDim2.new(1, -16, 1, 0),
 	Position = UDim2.fromOffset(16, 0),
 	BackgroundTransparency = 1,
-	Text = "Key Spammer",
+	Text = "Auto Shadow Raid (Undetected)",
 	TextColor3 = THEME.Text,
 	Font = Enum.Font.GothamBold,
-	TextSize = 15,
+	TextSize = 14,
 	TextXAlignment = Enum.TextXAlignment.Left,
-	Parent = mainHeader,
-})
-
-create("TextLabel", {
-	Name = "Hint",
-	Size = UDim2.new(0, 70, 1, 0),
-	Position = UDim2.new(1, -70, 0, 0),
-	BackgroundTransparency = 1,
-	Text = "G to hide",
-	TextColor3 = THEME.Muted,
-	Font = Enum.Font.Gotham,
-	TextSize = 11,
-	TextXAlignment = Enum.TextXAlignment.Right,
 	Parent = mainHeader,
 })
 
@@ -260,7 +357,6 @@ local mainBody = create("Frame", {
 	}),
 })
 
--- Status row
 local statusRow = create("Frame", {
 	Name = "StatusRow",
 	Size = UDim2.new(1, 0, 0, 18),
@@ -278,7 +374,7 @@ local statusDot = create("Frame", {
 }, { corner(4) })
 
 local statusLabel = create("TextLabel", {
-	Size = UDim2.new(1, -16, 1, 0),
+	Size = UDim2.new(1, -90, 1, 0),
 	Position = UDim2.fromOffset(16, 0),
 	BackgroundTransparency = 1,
 	Text = "Idle",
@@ -289,32 +385,130 @@ local statusLabel = create("TextLabel", {
 	Parent = statusRow,
 })
 
-local select_key_button = makeButton({
+create("TextLabel", {
+	Name = "Hint",
+	Size = UDim2.new(0, 70, 1, 0),
+	Position = UDim2.new(1, -70, 0, 0),
+	BackgroundTransparency = 1,
+	Text = "G to hide",
+	TextColor3 = THEME.Muted,
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Parent = statusRow,
+})
+
+local spam_button = makeButton({
 	Size = UDim2.new(1, 0, 0, 34),
 	Color = THEME.Panel,
-	Text = "Select Keys",
+	Text = "Spam Q: OFF",
+	TextSize = 13,
 	LayoutOrder = 2,
 })
-select_key_button.Parent = mainBody
-stroke(THEME.Stroke, 1).Parent = select_key_button
+spam_button.Parent = mainBody
+stroke(THEME.Stroke, 1).Parent = spam_button
+
+local click_button = makeButton({
+	Size = UDim2.new(1, 0, 0, 34),
+	Color = THEME.Panel,
+	Text = "Auto M1: OFF",
+	TextSize = 13,
+	LayoutOrder = 3,
+})
+click_button.Parent = mainBody
+stroke(THEME.Stroke, 1).Parent = click_button
+
+local intervalRow = create("Frame", {
+	Name = "IntervalRow",
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundTransparency = 1,
+	LayoutOrder = 4,
+	Parent = mainBody,
+})
+
+local intervalLabel = create("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 16),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = THEME.Muted,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 12,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = intervalRow,
+})
+
+local sliderTrack = create("Frame", {
+	Size = UDim2.new(1, -14, 0, 6),
+	Position = UDim2.fromOffset(7, 24),
+	BackgroundColor3 = THEME.Key,
+	BorderSizePixel = 0,
+	Parent = intervalRow,
+}, { corner(3) })
+
+local sliderFill = create("Frame", {
+	Size = UDim2.new(0, 0, 1, 0),
+	BackgroundColor3 = THEME.Accent,
+	BorderSizePixel = 0,
+	Parent = sliderTrack,
+}, { corner(3) })
+
+local sliderKnob = create("Frame", {
+	Size = UDim2.fromOffset(14, 14),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0, 0, 0.5, 0),
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BorderSizePixel = 0,
+	ZIndex = 2,
+	Parent = sliderTrack,
+}, { corner(7) })
+
+local sliderHit = create("TextButton", {
+	Size = UDim2.new(1, 0, 0, 20),
+	Position = UDim2.fromOffset(0, 16),
+	BackgroundTransparency = 1,
+	Text = "",
+	AutoButtonColor = false,
+	Parent = intervalRow,
+})
+
+local function updateIntervalUI()
+
+	local alpha = math.sqrt(math.clamp((clickInterval - INTERVAL_MIN) / (INTERVAL_MAX - INTERVAL_MIN), 0, 1))
+	sliderFill.Size = UDim2.new(alpha, 0, 1, 0)
+	sliderKnob.Position = UDim2.new(alpha, 0, 0.5, 0)
+	intervalLabel.Text = string.format("Click interval  ·  %.2fs", clickInterval)
+end
+updateIntervalUI()
+
+local walk_button = makeButton({
+	Size = UDim2.new(1, 0, 0, 34),
+	Color = THEME.Panel,
+	Text = "Walk to Bots: OFF",
+	LayoutOrder = 5,
+})
+walk_button.Parent = mainBody
+stroke(THEME.Stroke, 1).Parent = walk_button
 
 local toggle_button = makeButton({
 	Size = UDim2.new(1, 0, 0, 36),
 	Color = THEME.Green,
 	Text = "Enable",
 	Font = Enum.Font.GothamBold,
-	LayoutOrder = 3,
+	LayoutOrder = 6,
 })
 toggle_button.Parent = mainBody
 
 makeDraggable(mainHeader, mainFrame)
 
---------------------------------------------------------------------
--- UI refresh helpers
---------------------------------------------------------------------
 local function refreshStatus()
-	local n = countKeys()
-	select_key_button.Text = n > 0 and ("Select Keys  ·  " .. n .. " selected") or "Select Keys"
+	spam_button.Text = spamEnabled and "Spam Q: ON" or "Spam Q: OFF"
+	setBase(spam_button, spamEnabled and THEME.Accent or THEME.Panel)
+
+	click_button.Text = clickEnabled and "Auto M1: ON" or "Auto M1: OFF"
+	setBase(click_button, clickEnabled and THEME.Accent or THEME.Panel)
+
+	walk_button.Text = walkEnabled and "Walk to Bots: ON" or "Walk to Bots: OFF"
+	setBase(walk_button, walkEnabled and THEME.Accent or THEME.Panel)
 
 	if flashing then
 		return
@@ -324,7 +518,17 @@ local function refreshStatus()
 		toggle_button.Text = "Disable"
 		setBase(toggle_button, THEME.Red)
 		tween(statusDot, { BackgroundColor3 = THEME.Green })
-		statusLabel.Text = "Running  ·  " .. n .. (n == 1 and " key" or " keys")
+		local parts = {}
+		if spamEnabled then
+			table.insert(parts, "Q")
+		end
+		if clickEnabled then
+			table.insert(parts, "M1")
+		end
+		if walkEnabled then
+			table.insert(parts, "walk")
+		end
+		statusLabel.Text = "Running  ·  " .. table.concat(parts, " + ")
 		tween(statusLabel, { TextColor3 = THEME.Green })
 	else
 		toggle_button.Text = "Enable"
@@ -335,15 +539,31 @@ local function refreshStatus()
 	end
 end
 
-local function styleKeyButton(btn, isSelected)
-	setBase(btn, isSelected and THEME.Accent or THEME.Key)
-	tween(btn, { TextColor3 = isSelected and Color3.new(1, 1, 1) or THEME.Muted })
+local function runClickLoop()
+	if clickLoopRunning then
+		return
+	end
+	clickLoopRunning = true
+
+	task.spawn(function()
+		while toggle do
+			if clickEnabled and isInClickRange() then
+				local ok, err = pcall(doClick)
+				if not ok then
+					warn("[Auto Shadow Raid] Click failed: " .. tostring(err))
+					task.wait(1)
+				end
+				task.wait(clickInterval)
+			else
+				task.wait(0.05)
+			end
+		end
+		clickLoopRunning = false
+	end)
 end
 
---------------------------------------------------------------------
--- Spam loop
---------------------------------------------------------------------
 local function runSpamLoop()
+	runClickLoop()
 	if loopRunning then
 		return
 	end
@@ -351,233 +571,320 @@ local function runSpamLoop()
 
 	task.spawn(function()
 		while toggle do
-			for keyCode in pairs(selected_keys) do
-				if not toggle then
-					break
-				end
+			if not spamEnabled or (walkEnabled and nearTarget) then
+
+				task.wait(0.05)
+			else
 				pcall(function()
-					vim:SendKeyEvent(true, keyCode, false, game)
+					vim:SendKeyEvent(true, SPAM_KEY, false, game)
 					task.wait()
-					vim:SendKeyEvent(false, keyCode, false, game)
+					vim:SendKeyEvent(false, SPAM_KEY, false, game)
 				end)
 				task.wait(0.05)
 			end
-			task.wait()
 		end
 		loopRunning = false
 	end)
 end
 
---------------------------------------------------------------------
--- Save / load
---------------------------------------------------------------------
-local function saveSettings()
-	pcall(function()
-		local keyNames = {}
-		for keyCode in pairs(selected_keys) do
-			table.insert(keyNames, keyCode.Name)
-		end
-		writefile(CONFIG_FILE, HttpService:JSONEncode(keyNames))
-	end)
-end
+pcall(function()
+	if getgenv().MizWalkerLoop then
+		getgenv().MizWalkerLoop:Disconnect()
+		getgenv().MizWalkerLoop = nil
+	end
+end)
 
---------------------------------------------------------------------
--- Key picker window
---------------------------------------------------------------------
-local KEY_SIZE = 34
-local KEY_GAP = 4
+local waypoints = {}
+local currentWaypointIndex = 1
+local lastPathTick = 0
+local computingPath = false
+local wasWalking = false
 
-local pickerFrame = create("Frame", {
-	Name = "SelectionFrame",
-	Size = UDim2.fromOffset(408, 232),
-	AnchorPoint = Vector2.new(0.5, 0.5),
-	Position = UDim2.fromScale(0.5, 0.5),
-	BackgroundColor3 = THEME.Background,
-	BorderSizePixel = 0,
-	Visible = false,
-	Parent = screenGui,
-}, { corner(12), stroke(THEME.Stroke, 1) })
+local DEFAULT_RUN_IDS = {
+	[Enum.HumanoidRigType.R15] = "rbxassetid://913376220",
+	[Enum.HumanoidRigType.R6] = "rbxassetid://180426354",
+}
 
-local pickerHeader = create("Frame", {
-	Size = UDim2.new(1, 0, 0, 38),
-	BackgroundTransparency = 1,
-	Parent = pickerFrame,
-}, { padding(0, 14, 0, 14) })
+local runTrack = nil
+local runTrackAnimator = nil
 
-create("TextLabel", {
-	Size = UDim2.new(1, -90, 1, 0),
-	BackgroundTransparency = 1,
-	Text = "Choose keys to spam",
-	TextColor3 = THEME.Text,
-	Font = Enum.Font.GothamBold,
-	TextSize = 15,
-	TextXAlignment = Enum.TextXAlignment.Left,
-	Parent = pickerHeader,
-})
-
-local pickerCount = create("TextLabel", {
-	Size = UDim2.new(0, 80, 1, 0),
-	Position = UDim2.new(1, -80, 0, 0),
-	BackgroundTransparency = 1,
-	Text = "0 selected",
-	TextColor3 = THEME.Muted,
-	Font = Enum.Font.Gotham,
-	TextSize = 12,
-	TextXAlignment = Enum.TextXAlignment.Right,
-	Parent = pickerHeader,
-})
-
-create("Frame", {
-	Size = UDim2.new(1, -24, 0, 1),
-	Position = UDim2.fromOffset(12, 38),
-	BackgroundColor3 = THEME.Stroke,
-	BackgroundTransparency = 0.4,
-	BorderSizePixel = 0,
-	Parent = pickerFrame,
-})
-
-local keysContainer = create("Frame", {
-	Size = UDim2.new(1, 0, 0, KEY_SIZE * 3 + KEY_GAP * 2),
-	Position = UDim2.fromOffset(0, 54),
-	BackgroundTransparency = 1,
-	Parent = pickerFrame,
-}, {
-	create("UIListLayout", {
-		Padding = UDim.new(0, KEY_GAP),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		HorizontalAlignment = Enum.HorizontalAlignment.Center,
-	}),
-})
-
-local function refreshPickerCount()
-	local n = countKeys()
-	pickerCount.Text = n .. " selected"
-end
-
-for rowIndex, row in ipairs(keyRows) do
-	local rowFrame = create("Frame", {
-		Size = UDim2.new(1, 0, 0, KEY_SIZE),
-		BackgroundTransparency = 1,
-		LayoutOrder = rowIndex,
-		Parent = keysContainer,
-	}, {
-		create("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			Padding = UDim.new(0, KEY_GAP),
-			HorizontalAlignment = Enum.HorizontalAlignment.Center,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
-	})
-
-	for i, key in ipairs(row) do
-		local keyCode = Enum.KeyCode[string.upper(key)]
-		local button = makeButton({
-			Size = UDim2.fromOffset(KEY_SIZE, KEY_SIZE),
-			Color = THEME.Key,
-			Text = string.upper(key),
-			TextColor = THEME.Muted,
-			Font = Enum.Font.GothamBold,
-			TextSize = 14,
-			Radius = 7,
-			LayoutOrder = i,
-		})
-		button.Parent = rowFrame
-		keyButtons[keyCode] = button
-
-		if selected_keys[keyCode] then
-			styleKeyButton(button, true)
-		end
-
-		button.MouseButton1Click:Connect(function()
-			if selected_keys[keyCode] then
-				selected_keys[keyCode] = nil
-				styleKeyButton(button, false)
-			else
-				selected_keys[keyCode] = true
-				styleKeyButton(button, true)
+local function stopRunTrack()
+	if runTrack then
+		pcall(function()
+			if runTrack.IsPlaying then
+				runTrack:Stop(0.2)
 			end
-			refreshPickerCount()
-			refreshStatus()
-			saveSettings()
 		end)
 	end
 end
 
--- Footer buttons
-local footer = create("Frame", {
-	Size = UDim2.new(1, -28, 0, 34),
-	Position = UDim2.new(0, 14, 1, -48),
-	BackgroundTransparency = 1,
-	Parent = pickerFrame,
-}, {
-	create("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		Padding = UDim.new(0, 8),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-	}),
-})
+local function getRunAnimationId(char, humanoid)
 
-local selectAllBtn = makeButton({
-	Size = UDim2.new(1 / 3, -6, 1, 0),
-	Color = THEME.Panel,
-	Text = "Select All",
-	TextSize = 13,
-	LayoutOrder = 1,
-})
-selectAllBtn.Parent = footer
-stroke(THEME.Stroke, 1).Parent = selectAllBtn
-
-local clearBtn = makeButton({
-	Size = UDim2.new(1 / 3, -6, 1, 0),
-	Color = THEME.Panel,
-	Text = "Clear",
-	TextSize = 13,
-	LayoutOrder = 2,
-})
-clearBtn.Parent = footer
-stroke(THEME.Stroke, 1).Parent = clearBtn
-
-local doneBtn = makeButton({
-	Size = UDim2.new(1 / 3, -6, 1, 0),
-	Color = THEME.Accent,
-	Text = "Done",
-	Font = Enum.Font.GothamBold,
-	TextSize = 13,
-	LayoutOrder = 3,
-})
-doneBtn.Parent = footer
-
-selectAllBtn.MouseButton1Click:Connect(function()
-	for keyCode, btn in pairs(keyButtons) do
-		selected_keys[keyCode] = true
-		styleKeyButton(btn, true)
+	if WALK.RunAnimationId and WALK.RunAnimationId ~= "" then
+		return WALK.RunAnimationId
 	end
-	refreshPickerCount()
-	refreshStatus()
-	saveSettings()
-end)
 
-clearBtn.MouseButton1Click:Connect(function()
-	for keyCode, btn in pairs(keyButtons) do
-		selected_keys[keyCode] = nil
-		styleKeyButton(btn, false)
+	local animate = char:FindFirstChild("Animate")
+	if animate then
+		local run = animate:FindFirstChild("run")
+		local runAnim = run and (run:FindFirstChild("RunAnim") or run:FindFirstChildOfClass("Animation"))
+		if runAnim and runAnim.AnimationId ~= "" then
+			return runAnim.AnimationId
+		end
+		local walk = animate:FindFirstChild("walk")
+		local walkAnim = walk and (walk:FindFirstChild("WalkAnim") or walk:FindFirstChildOfClass("Animation"))
+		if walkAnim and walkAnim.AnimationId ~= "" then
+			return walkAnim.AnimationId
+		end
 	end
-	refreshPickerCount()
-	refreshStatus()
-	saveSettings()
+	return DEFAULT_RUN_IDS[humanoid.RigType]
+end
+
+local function updateRunAnimation(char, humanoid, root)
+	if not WALK.FixAnimation then
+		stopRunTrack()
+		return
+	end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		return
+	end
+
+	local vel = root.AssemblyLinearVelocity
+	local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+	local onGround = humanoid.FloorMaterial ~= Enum.Material.Air
+	local moving = speed > 1.5 and onGround
+
+	if not moving then
+		stopRunTrack()
+		return
+	end
+
+	local natural = false
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		if track ~= runTrack and track.WeightCurrent > 0.1 then
+			local name = string.lower(track.Name)
+			local animName = track.Animation and string.lower(track.Animation.Name) or ""
+			if string.find(name, "run") or string.find(name, "walk")
+				or string.find(animName, "run") or string.find(animName, "walk") then
+				natural = true
+				break
+			end
+		end
+	end
+
+	if natural then
+		stopRunTrack()
+		return
+	end
+
+	if not runTrack or runTrackAnimator ~= animator then
+		local id = getRunAnimationId(char, humanoid)
+		if not id then
+			return
+		end
+		local anim = Instance.new("Animation")
+		anim.Name = "MizRunAnim"
+		anim.AnimationId = id
+		local ok, track = pcall(function()
+			return animator:LoadAnimation(anim)
+		end)
+		if not ok or not track then
+			return
+		end
+		track.Priority = Enum.AnimationPriority.Movement
+		track.Looped = true
+		runTrack = track
+		runTrackAnimator = animator
+	end
+
+	if not runTrack.IsPlaying then
+		runTrack:Play(0.15)
+	end
+
+	runTrack:AdjustSpeed(math.clamp(speed / 16, 0.4, 2.5))
+end
+
+local function getClosestEnemy(root)
+	local folder = workspace:FindFirstChild(WALK.FolderName)
+	if not folder then
+		return nil
+	end
+
+	local closest = nil
+	local shortest = WALK.MaxDistance
+
+	for _, enemy in ipairs(folder:GetChildren()) do
+		if enemy:IsA("Model") then
+			local hum = enemy:FindFirstChildOfClass("Humanoid")
+			local targetRoot = enemy:FindFirstChild("HumanoidRootPart")
+			if hum and hum.Health > 0 and targetRoot and not isImmune(enemy) then
+				local dist = (targetRoot.Position - root.Position).Magnitude
+				if dist < shortest then
+					shortest = dist
+					closest = enemy
+				end
+			end
+		end
+	end
+	return closest
+end
+
+isInClickRange = function()
+	local char = localPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return false
+	end
+	local enemy = getClosestEnemy(root)
+	if not enemy then
+		return false
+	end
+	local targetRoot = enemy:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then
+		return false
+	end
+	local dist = (targetRoot.Position - root.Position).Magnitude
+	local size = enemy:GetExtentsSize()
+	local edgeDist = math.max(dist - math.max(size.X, size.Z) / 2, 0)
+	return edgeDist <= WALK.ClickRange
+end
+
+local function computePath(root, targetPosition)
+	if computingPath then
+		return
+	end
+	computingPath = true
+
+	local path = PathfindingService:CreatePath({
+		AgentRadius = 2,
+		AgentHeight = 5,
+		AgentCanJump = true,
+		WaypointSpacing = 4,
+	})
+
+	local ok = pcall(function()
+		path:ComputeAsync(root.Position, targetPosition)
+	end)
+
+	if ok and path.Status == Enum.PathStatus.Success then
+		waypoints = path:GetWaypoints()
+		currentWaypointIndex = 2
+	else
+		waypoints = {}
+	end
+	computingPath = false
+end
+
+local stoppedMoving = false
+local function stopMoving(humanoid)
+
+	if humanoid and not stoppedMoving then
+		stoppedMoving = true
+		humanoid:Move(Vector3.zero)
+	end
+end
+
+getgenv().MizWalkerLoop = RunService.Heartbeat:Connect(function()
+	local char = localPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+	if not (toggle and walkEnabled) then
+		nearTarget = false
+		if wasWalking then
+			wasWalking = false
+			stopMoving(humanoid)
+			stopRunTrack()
+		end
+		return
+	end
+	wasWalking = true
+
+	if not root or not humanoid or humanoid.Health <= 0 then
+		nearTarget = false
+		stopRunTrack()
+		return
+	end
+
+	updateRunAnimation(char, humanoid, root)
+
+	local enemy = getClosestEnemy(root)
+	if not enemy then
+		nearTarget = false
+		stopMoving(humanoid)
+		return
+	end
+
+	local targetRoot = enemy:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then
+		nearTarget = false
+		return
+	end
+
+	local dist = (targetRoot.Position - root.Position).Magnitude
+
+	local size = enemy:GetExtentsSize()
+	local bodyRadius = math.max(size.X, size.Z) / 2
+	local edgeDist = math.max(dist - bodyRadius, 0)
+
+	if edgeDist <= WALK.KeyStopDistance then
+		nearTarget = true
+	elseif edgeDist >= WALK.KeyResumeDistance then
+		nearTarget = false
+	end
+
+	if dist <= WALK.StopDistance then
+		stopMoving(humanoid)
+		return
+	end
+
+	local now = tick()
+	if now - lastPathTick >= WALK.RecalculateDelay then
+		lastPathTick = now
+		task.spawn(computePath, root, targetRoot.Position)
+	end
+
+	local moveTarget = targetRoot.Position
+
+	if #waypoints > 0 then
+
+		local rootFlat = Vector3.new(root.Position.X, 0, root.Position.Z)
+		while currentWaypointIndex < #waypoints do
+			local wp = waypoints[currentWaypointIndex]
+			local wpFlat = Vector3.new(wp.Position.X, 0, wp.Position.Z)
+			if (wpFlat - rootFlat).Magnitude < WALK.WaypointReach then
+				currentWaypointIndex += 1
+			else
+				break
+			end
+		end
+
+		local waypoint = waypoints[math.min(currentWaypointIndex, #waypoints)]
+		moveTarget = waypoint.Position
+
+		if waypoint.Action == Enum.PathWaypointAction.Jump
+			and humanoid.FloorMaterial ~= Enum.Material.Air then
+			humanoid.Jump = true
+		end
+	end
+
+	stoppedMoving = false
+	humanoid:MoveTo(moveTarget)
 end)
 
-doneBtn.MouseButton1Click:Connect(function()
-	pickerFrame.Visible = false
-	refreshStatus()
-	saveSettings()
-end)
+local function saveSettings()
+	pcall(function()
+		writefile(CONFIG_FILE, HttpService:JSONEncode({
+			spam = spamEnabled,
+			click = clickEnabled,
+			interval = clickInterval,
+			walk = walkEnabled,
+		}))
+	end)
+end
 
-makeDraggable(pickerHeader, pickerFrame)
-
---------------------------------------------------------------------
--- Load settings (after UI exists so it can update it)
---------------------------------------------------------------------
 local function loadSettings()
 	local ok, raw = pcall(function()
 		return readfile(CONFIG_FILE)
@@ -593,22 +900,21 @@ local function loadSettings()
 		return
 	end
 
-	for _, keyName in ipairs(decoded) do
-		local okEnum, enumVal = pcall(function()
-			return Enum.KeyCode[keyName]
-		end)
-		if okEnum and enumVal then
-			selected_keys[enumVal] = true
-			if keyButtons[enumVal] then
-				styleKeyButton(keyButtons[enumVal], true)
-			end
-		end
+	if decoded.spam == true then
+		spamEnabled = true
+	end
+	if decoded.click == true then
+		clickEnabled = true
+	end
+	if decoded.walk == true then
+		walkEnabled = true
+	end
+	if type(decoded.interval) == "number" then
+		clickInterval = math.clamp(decoded.interval, INTERVAL_MIN, INTERVAL_MAX)
+		updateIntervalUI()
 	end
 
-	refreshPickerCount()
-
-	-- Auto enable on startup if keys exist
-	if countKeys() > 0 then
+	if spamEnabled or clickEnabled or walkEnabled then
 		toggle = true
 		runSpamLoop()
 	end
@@ -617,30 +923,82 @@ end
 loadSettings()
 refreshStatus()
 
---------------------------------------------------------------------
--- Interactions
---------------------------------------------------------------------
--- Hide / Show GUI using 'G' key
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
+
+	if input.KeyCode == Enum.KeyCode.RightShift then
+		walkEnabled = not walkEnabled
+		refreshStatus()
+		saveSettings()
+		return
+	end
+
 	if input.KeyCode == Enum.KeyCode.G then
 		screenGui.Enabled = not screenGui.Enabled
 	end
 end)
 
-select_key_button.MouseButton1Click:Connect(function()
-	pickerFrame.Visible = not pickerFrame.Visible
+spam_button.MouseButton1Click:Connect(function()
+	spamEnabled = not spamEnabled
+	refreshStatus()
+	saveSettings()
 end)
 
+click_button.MouseButton1Click:Connect(function()
+	clickEnabled = not clickEnabled
+	refreshStatus()
+	saveSettings()
+end)
+
+walk_button.MouseButton1Click:Connect(function()
+	walkEnabled = not walkEnabled
+	refreshStatus()
+	saveSettings()
+end)
+
+do
+	local draggingSlider = false
+
+	local function setFromX(x)
+		local alpha = math.clamp((x - sliderTrack.AbsolutePosition.X) / sliderTrack.AbsoluteSize.X, 0, 1)
+		local value = INTERVAL_MIN + (INTERVAL_MAX - INTERVAL_MIN) * alpha * alpha
+		clickInterval = math.clamp(math.floor(value * 100 + 0.5) / 100, INTERVAL_MIN, INTERVAL_MAX)
+		updateIntervalUI()
+	end
+
+	sliderHit.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			draggingSlider = true
+			setFromX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			setFromX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			draggingSlider = false
+			saveSettings()
+		end
+	end)
+end
+
 toggle_button.MouseButton1Click:Connect(function()
-	if countKeys() == 0 then
+	if not spamEnabled and not clickEnabled and not walkEnabled then
 		if flashing then
 			return
 		end
 		flashing = true
-		toggle_button.Text = "Pick keys first!"
+		toggle_button.Text = "Turn something on first!"
 		setBase(toggle_button, THEME.Amber)
 		task.delay(1.2, function()
 			flashing = false
@@ -655,13 +1013,9 @@ toggle_button.MouseButton1Click:Connect(function()
 	end
 	refreshStatus()
 end)
-print("Background spammer initialized!")
-    
-    -- Example:
-    -- local vu = game:GetService("VirtualUser")
-    -- ... your logic ...
+print("Auto Shadow Raid initialized!")
 end)
 
 if not success then
-    warn("[Spammer Error]: " .. tostring(errorMessage))
+	warn("[Auto Shadow Raid Error]: " .. tostring(errorMessage))
 end
